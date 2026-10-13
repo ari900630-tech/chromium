@@ -1,0 +1,78 @@
+name: Build Chromium Android APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-android:
+    # Requires a Linux x86-64 self-hosted runner labelled chromium-android,
+    # with at least 100 GB free disk and preferably 16+ GB RAM.
+    runs-on: [self-hosted, linux, x64, chromium-android]
+    timeout-minutes: 720
+
+    steps:
+      - name: Check runner capacity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Disk space:"
+          df -h .
+          free -h || true
+          available_gb=$(df -BG . | awk 'NR==2 {gsub(/G/, "", $4); print $4}')
+          if [ "${available_gb:-0}" -lt 100 ]; then
+            echo "::error::Chromium Android builds need at least 100 GB free disk space."
+            exit 1
+          fi
+
+      - name: Check out this Chromium fork
+        uses: actions/checkout@v4
+        with:
+          path: src
+          fetch-depth: 1
+          submodules: false
+
+      - name: Configure and sync Chromium dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git depot_tools
+          echo "$GITHUB_WORKSPACE/depot_tools" >> "$GITHUB_PATH"
+          export PATH="$GITHUB_WORKSPACE/depot_tools:$PATH"
+          cd "$GITHUB_WORKSPACE"
+          gclient config https://github.com/ari900630-tech/chromium.git
+          gclient sync --nohooks --no-history
+
+      - name: Install Android build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/src"
+          ./build/install-build-deps-android.sh
+
+      - name: Run Chromium hooks
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$GITHUB_WORKSPACE/depot_tools:$PATH"
+          cd "$GITHUB_WORKSPACE"
+          gclient runhooks
+
+      - name: Generate Android build
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$GITHUB_WORKSPACE/depot_tools:$PATH"
+          cd "$GITHUB_WORKSPACE/src"
+          gn gen out/Default --args='target_os="android" target_cpu="arm64"'
+          autoninja -C out/Default chrome_public_apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: chromium-android-apk
+          path: src/out/Default/apks/ChromePublic.apk
+          if-no-files-found: error
+          retention-days: 7
